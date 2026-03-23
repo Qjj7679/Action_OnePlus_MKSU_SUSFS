@@ -4,12 +4,12 @@ on:
 workflow_dispatch:
 
 env:
-CPU: sm7675
-FEIL: oneplus_ace_3v_b
-CPUD: pineapple
-ANDROID_VERSION: android16
+CPU: "sm7675"
+FEIL: "oneplus_ace_3v_b"
+CPUD: "pineapple"
+ANDROID_VERSION: "android16"
 KERNEL_VERSION: "6.1"
-BUILD_METHOD: gki
+BUILD_METHOD: "gki"
 
 jobs:
 build:
@@ -23,10 +23,10 @@ with:
 root-reserve-mb: 8192
 temp-reserve-mb: 2048
 swap-size-mb: 8192
-remove-dotnet: 'true'
-remove-android: 'true'
-remove-haskell: 'true'
-remove-codeql: 'true'
+remove-dotnet: "true"
+remove-android: "true"
+remove-haskell: "true"
+remove-codeql: "true"
 
 - name: Configure Git
 run: |
@@ -41,7 +41,7 @@ sudo apt install -y python3 git curl jq
 - name: Install repo tool
 run: |
 curl -L https://storage.googleapis.com/git-repo-downloads/repo -o ~/repo
-chmod a+x ~/repo
+chmod +x ~/repo
 sudo mv ~/repo /usr/local/bin/repo
 repo version
 
@@ -58,11 +58,7 @@ echo "BUILD_METHOD=${BUILD_METHOD}"
 run: |
 mkdir -p kernel_workspace
 cd kernel_workspace
-repo init \
--u https://github.com/OnePlusOSS/kernel_manifest.git \
--b refs/heads/oneplus/${CPU} \
--m ${FEIL}.xml \
---depth=1
+repo init -u https://github.com/OnePlusOSS/kernel_manifest.git -b refs/heads/oneplus/${CPU} -m ${FEIL}.xml --depth=1
 
 - name: Sync sources
 run: |
@@ -95,7 +91,7 @@ fi
 rm -f kernel_platform/common/android/abi_gki_protected_exports_* || true
 rm -f kernel_platform/msm-kernel/android/abi_gki_protected_exports_* || true
 
-- name: Remove -dirty suffix
+- name: Remove dirty suffix
 run: |
 cd kernel_workspace/kernel_platform
 sed -i 's/ -dirty//g' common/scripts/setlocalversion || true
@@ -127,7 +123,7 @@ IMAGE_PATH="${DIST_DIR}/Image"
 elif [ -f "${BAZEL_DIR}/Image" ]; then
 IMAGE_PATH="${BAZEL_DIR}/Image"
 else
-IMAGE_PATH=$(find kernel_workspace -type f -name "Image" | head -n 1)
+IMAGE_PATH=$(find kernel_workspace -type f -name Image | head -n 1)
 fi
 
 if [ -n "${IMAGE_PATH}" ] && [ -f "${IMAGE_PATH}" ]; then
@@ -137,17 +133,7 @@ else
 echo "Image not found"
 fi
 
-find kernel_workspace -type f \( \
--name "Image" -o \
--name "Image.gz" -o \
--name "Image.lz4" -o \
--name "*.dtb" -o \
--name "*.dtbo" -o \
--name "dtbo.img" -o \
--name "boot.img" -o \
--name "vendor_boot.img" -o \
--name "vendor_dlkm.img" \
-\) | sort | tee out-artifacts/found-files.txt
+find kernel_workspace -type f | grep -E '(/Image|/Image\\.gz|/Image\\.lz4|\\.dtb$|\\.dtbo$|/dtbo\\.img$|/boot\\.img$|/vendor_boot\\.img$|/vendor_dlkm\\.img$)' | sort > out-artifacts/found-files.txt || true
 
 cp kernel_workspace/build.log out-artifacts/build.log || true
 cp kernel_workspace/repo-sync.log out-artifacts/repo-sync.log || true
@@ -156,4 +142,4 @@ cp kernel_workspace/repo-sync.log out-artifacts/repo-sync.log || true
 uses: actions/upload-artifact@v4
 with:
 name: Ace3V_A16_Stock_Kernel
-path: out-artifacts/*
+path: out-artifacts/
