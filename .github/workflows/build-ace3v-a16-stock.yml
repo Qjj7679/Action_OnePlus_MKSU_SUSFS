@@ -1,4 +1,4 @@
-name: Test Ace3V Workflow
+name: Test
 
 on:
 workflow_dispatch:
@@ -7,21 +7,4 @@ jobs:
 test:
 runs-on: ubuntu-latest
 steps:
-- name: Hello
-run: echo "workflow syntax ok"
-
-- name: Show env
-env:
-CPU: sm7675
-FEIL: oneplus_ace_3v_b
-CPUD: pineapple
-ANDROID_VERSION: android16
-KERNEL_VERSION: "6.1"
-BUILD_METHOD: gki
-run: |
-echo "CPU=${CPU}"
-echo "FEIL=${FEIL}"
-echo "CPUD=${CPUD}"
-echo "ANDROID_VERSION=${ANDROID_VERSION}"
-echo "KERNEL_VERSION=${KERNEL_VERSION}"
-echo "BUILD_METHOD=${BUILD_METHOD}"
+- run: echo hello
