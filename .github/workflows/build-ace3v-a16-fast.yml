@@ -1,0 +1,248 @@
+name: Build Ace3V A16 Fast Kernel
+
+'on':
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    env:
+      CPU: sm7675
+      FEIL: oneplus_ace_3v_b
+      CPUD: pineapple
+      ANDROID_VERSION: android16
+      KERNEL_VERSION: "6.1"
+      BUILD_METHOD: gki
+      CCACHE_COMPILERCHECK: "%compiler% -dumpmachine; %compiler% -dumpversion"
+      CCACHE_NOHASHDIR: "true"
+      CCACHE_HARDLINK: "true"
+      CCACHE_MAXSIZE: 8G
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Maximize build space
+        uses: easimon/maximize-build-space@master
+        with:
+          root-reserve-mb: 8192
+          temp-reserve-mb: 2048
+          swap-size-mb: 8192
+          remove-dotnet: "true"
+          remove-android: "true"
+          remove-haskell: "true"
+          remove-codeql: "true"
+
+      - name: Configure Git
+        run: |
+          git config --global user.name "Qjj7679"
+          git config --global user.email "actions@github.com"
+
+      - name: Install dependencies
+        run: |
+          sudo apt update
+          sudo apt install -y \
+            python3 git curl jq ccache \
+            libelf-dev build-essential flex bison \
+            libssl-dev libncurses-dev liblz4-tool \
+            zlib1g-dev libxml2-utils rsync unzip \
+            gawk dos2unix kmod libdw-dev elfutils pahole
+
+      - name: Install repo tool
+        run: |
+          curl -L https://storage.googleapis.com/git-repo-downloads/repo -o ~/repo
+          chmod +x ~/repo
+          sudo mv ~/repo /usr/local/bin/repo
+          sudo ln -sf /usr/local/bin/repo /bin/repo
+          repo version
+
+      - name: Set ccache directory
+        run: |
+          echo "CCACHE_DIR=$HOME/.ccache_ace3v_a16_fast" >> $GITHUB_ENV
+          mkdir -p "$HOME/.ccache_ace3v_a16_fast"
+
+      - name: Restore ccache
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ccache-${{ runner.os }}-ace3v-a16-fast-v1
+          restore-keys: |
+            ccache-${{ runner.os }}-ace3v-a16-fast-
+
+      - name: Init ccache
+        run: |
+          ccache -M ${CCACHE_MAXSIZE}
+          ccache -s || true
+
+      - name: Show build config
+        run: |
+          echo "CPU=${CPU}"
+          echo "FEIL=${FEIL}"
+          echo "CPUD=${CPUD}"
+          echo "ANDROID_VERSION=${ANDROID_VERSION}"
+          echo "KERNEL_VERSION=${KERNEL_VERSION}"
+          echo "BUILD_METHOD=${BUILD_METHOD}"
+
+      - name: Initialize repo
+        run: |
+          mkdir -p kernel_workspace
+          cd kernel_workspace
+          repo init -u https://github.com/OnePlusOSS/kernel_manifest.git -b refs/heads/oneplus/${CPU} -m ${FEIL}.xml --depth=1 --no-clone-bundle --no-tags
+
+      - name: Sync sources
+        run: |
+          cd kernel_workspace
+          repo sync -c -j$(nproc) --no-clone-bundle --no-tags --force-sync 2>&1 | tee repo-sync.log
+
+      - name: Check synced tree
+        run: |
+          cd kernel_workspace
+          ls -lah
+          ls -lah kernel_platform || true
+          ls -lah kernel_platform/common || true
+          ls -lah kernel_platform/msm-kernel || true
+
+      - name: Relax protected exports checks
+        run: |
+          cd kernel_workspace
+          if [ -e kernel_platform/common/BUILD.bazel ]; then
+            sed -i '/^[[:space:]]*"protected_exports_list"[[:space:]]*:[[:space:]]*"android\/abi_gki_protected_exports_aarch64",$/d' kernel_platform/common/BUILD.bazel
+          fi
+          if [ -e kernel_platform/msm-kernel/BUILD.bazel ]; then
+            sed -i '/^[[:space:]]*"protected_exports_list"[[:space:]]*:[[:space:]]*"android\/abi_gki_protected_exports_aarch64",$/d' kernel_platform/msm-kernel/BUILD.bazel
+          fi
+          rm -f kernel_platform/common/android/abi_gki_protected_exports_* || true
+          rm -f kernel_platform/msm-kernel/android/abi_gki_protected_exports_* || true
+
+      - name: Remove dirty suffix
+        run: |
+          cd kernel_workspace/kernel_platform
+          sed -i 's/ -dirty//g' common/scripts/setlocalversion || true
+          sed -i 's/ -dirty//g' msm-kernel/scripts/setlocalversion || true
+          sed -i 's/ -dirty//g' external/dtc/scripts/setlocalversion || true
+
+      - name: Fast build Image
+        run: |
+          cd kernel_workspace/kernel_platform
+
+          if [[ -f ./common/build.config.arm ]] && grep -q '^LLVM_IAS=1' ./common/build.config.arm; then
+            USE_LLVM_IAS=true
+          else
+            USE_LLVM_IAS=false
+          fi
+
+          CLANG_PREBUILT_BIN=""
+          for f in ./common/build.config.common ./msm-kernel/build.config.common; do
+            [[ -f "$f" ]] || continue
+            CLANG_PREBUILT_BIN=$(grep '^CLANG_PREBUILT_BIN=' "$f" | cut -d'=' -f2)
+            [[ -n "$CLANG_PREBUILT_BIN" ]] && break
+          done
+
+          if [[ -z "$CLANG_PREBUILT_BIN" ]]; then
+            echo "CLANG_PREBUILT_BIN not found"
+            exit 1
+          fi
+
+          if [[ "$CLANG_PREBUILT_BIN" =~ (clang-r[0-9a-z]+) ]]; then
+            CLANG_VERSION="${BASH_REMATCH[1]}"
+          else
+            if [[ -f ./common/build.config.constants ]]; then
+              CLANG_VERSION=$(grep '^CLANG_VERSION=' ./common/build.config.constants | cut -d'=' -f2 || true)
+            fi
+          fi
+
+          if [[ -z "$CLANG_VERSION" ]]; then
+            echo "CLANG_VERSION not found"
+            exit 1
+          fi
+
+          CLANG_PREBUILT_BIN=${CLANG_PREBUILT_BIN/\$\{CLANG_VERSION\}/$CLANG_VERSION}
+
+          export PATH="$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/$CLANG_PREBUILT_BIN:$PATH"
+          export PATH="/usr/lib/ccache:$PATH"
+
+          cd ./common
+
+          COMMON_REAL_PATH=$(pwd -P)
+          PLATFORM_REAL_PATH=$(dirname "$COMMON_REAL_PATH")
+          ROOT_REAL_PATH=$(dirname "$PLATFORM_REAL_PATH")
+
+          MAP="-fdebug-prefix-map=$ROOT_REAL_PATH=."
+          MPMAP="-fmacro-prefix-map=$ROOT_REAL_PATH=."
+          FPMAP="-ffile-prefix-map=$ROOT_REAL_PATH=."
+
+          KCFLAGS="$MAP $MPMAP $FPMAP -no-canonical-prefixes -Wno-error -D__ANDROID_COMMON_KERNEL__"
+
+          MAKE_ARGS=(
+            LLVM=1
+            ARCH=arm64
+            CROSS_COMPILE=aarch64-linux-gnu-
+            CC="ccache clang"
+            HOSTCC="ccache clang"
+            LD=ld.lld
+            HOSTLD=ld.lld
+            PAHOLE=../../prebuilts/kernel-build-tools/linux-x86/bin/pahole
+            KCFLAGS="$KCFLAGS"
+          )
+
+          if [[ "$USE_LLVM_IAS" == "true" ]]; then
+            MAKE_ARGS=(LLVM_IAS=1 "${MAKE_ARGS[@]}")
+          fi
+
+          make O=out "${MAKE_ARGS[@]}" gki_defconfig
+          make O=out "${MAKE_ARGS[@]}" olddefconfig
+          make -j"$(nproc --all)" O=out "${MAKE_ARGS[@]}" 2>&1 | tee "$GITHUB_WORKSPACE/kernel_workspace/build.log"
+
+          ccache -s || true
+
+      - name: Collect outputs
+        run: |
+          mkdir -p out-artifacts
+
+          IMAGE_PATH=$(find kernel_workspace/kernel_platform/common/out -type f -name Image | head -n 1)
+          IMAGE_GZ_PATH=$(find kernel_workspace/kernel_platform/common/out -type f -name Image.gz | head -n 1)
+          IMAGE_LZ4_PATH=$(find kernel_workspace/kernel_platform/common/out -type f -name Image.lz4 | head -n 1)
+
+          if [ -n "${IMAGE_PATH}" ] && [ -f "${IMAGE_PATH}" ]; then
+            cp "${IMAGE_PATH}" out-artifacts/Image
+          fi
+          if [ -n "${IMAGE_GZ_PATH}" ] && [ -f "${IMAGE_GZ_PATH}" ]; then
+            cp "${IMAGE_GZ_PATH}" out-artifacts/Image.gz
+          fi
+          if [ -n "${IMAGE_LZ4_PATH}" ] && [ -f "${IMAGE_LZ4_PATH}" ]; then
+            cp "${IMAGE_LZ4_PATH}" out-artifacts/Image.lz4
+          fi
+
+          find kernel_workspace/kernel_platform/common/out -type f | grep -E '(/Image|/Image\\.gz|/Image\\.lz4|\\.dtb$|\\.dtbo$)' | sort > out-artifacts/found-files.txt || true
+
+          cp kernel_workspace/build.log out-artifacts/build.log || true
+          cp kernel_workspace/repo-sync.log out-artifacts/repo-sync.log || true
+
+      - name: Make AnyKernel3
+        run: |
+          git clone https://github.com/osm0sis/AnyKernel3 --depth=1 AnyKernel3
+          rm -rf AnyKernel3/.git
+
+          IMAGE_PATH=$(find kernel_workspace/kernel_platform/common/out -type f -name Image | head -n 1)
+
+          if [ -z "${IMAGE_PATH}" ] || [ ! -f "${IMAGE_PATH}" ]; then
+            echo "Image not found, cannot create AnyKernel3 package"
+            exit 1
+          fi
+
+          cp "${IMAGE_PATH}" AnyKernel3/Image
+          cd AnyKernel3
+          zip -r9 ../AnyKernel3_Ace3V_A16_Fast.zip ./*
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: Ace3V_A16_Fast_Kernel
+          path: out-artifacts
+
+      - name: Upload AnyKernel3 package
+        uses: actions/upload-artifact@v4
+        with:
+          name: AnyKernel3_Ace3V_A16_Fast
+          path: AnyKernel3_Ace3V_A16_Fast.zip

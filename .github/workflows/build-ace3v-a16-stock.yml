@@ -17,28 +17,62 @@ jobs:
 
     steps:
       - name: Configure Git
-        run: git config --global user.name "Qjj7679" && git config --global user.email "actions@github.com"
+        run: |
+          git config --global user.name "Qjj7679"
+          git config --global user.email "actions@github.com"
 
       - name: Install dependencies
-        run: sudo apt update && sudo apt install -y python3 git curl jq
+        run: |
+          sudo apt update
+          sudo apt install -y python3 git curl jq
 
       - name: Install repo tool
-        run: curl -L https://storage.googleapis.com/git-repo-downloads/repo -o ~/repo && chmod +x ~/repo && sudo mv ~/repo /usr/local/bin/repo && repo version
+        run: |
+          curl -L https://storage.googleapis.com/git-repo-downloads/repo -o ~/repo
+          chmod +x ~/repo
+          sudo mv ~/repo /usr/local/bin/repo
+          sudo ln -sf /usr/local/bin/repo /bin/repo
+          repo version
+          /bin/repo version
+
+      - name: Show build config
+        run: |
+          echo "CPU=${CPU}"
+          echo "FEIL=${FEIL}"
+          echo "CPUD=${CPUD}"
+          echo "ANDROID_VERSION=${ANDROID_VERSION}"
+          echo "KERNEL_VERSION=${KERNEL_VERSION}"
+          echo "BUILD_METHOD=${BUILD_METHOD}"
 
       - name: Initialize repo
-        run: mkdir -p kernel_workspace && cd kernel_workspace && repo init -u https://github.com/OnePlusOSS/kernel_manifest.git -b refs/heads/oneplus/${CPU} -m ${FEIL}.xml --depth=1
+        run: |
+          mkdir -p kernel_workspace
+          cd kernel_workspace
+          repo init -u https://github.com/OnePlusOSS/kernel_manifest.git -b refs/heads/oneplus/${CPU} -m ${FEIL}.xml --depth=1
 
       - name: Sync sources
-        run: cd kernel_workspace && repo sync -c -j8 --no-tags 2>&1 | tee repo-sync.log
+        run: |
+          cd kernel_workspace
+          repo sync -c -j8 --no-tags 2>&1 | tee repo-sync.log
 
       - name: Check synced tree
-        run: cd kernel_workspace && ls -lah && ls -lah kernel_platform || true && ls -lah kernel_platform/common || true && ls -lah kernel_platform/msm-kernel || true && ls -lah kernel_platform/build_with_bazel.py || true
+        run: |
+          cd kernel_workspace
+          ls -lah
+          ls -lah kernel_platform || true
+          ls -lah kernel_platform/common || true
+          ls -lah kernel_platform/msm-kernel || true
+          ls -lah kernel_platform/build_with_bazel.py || true
 
       - name: Relax protected exports checks
         run: |
           cd kernel_workspace
-          if [ -e kernel_platform/common/BUILD.bazel ]; then sed -i '/^[[:space:]]*"protected_exports_list"[[:space:]]*:[[:space:]]*"android\/abi_gki_protected_exports_aarch64",$/d' kernel_platform/common/BUILD.bazel; fi
-          if [ -e kernel_platform/msm-kernel/BUILD.bazel ]; then sed -i '/^[[:space:]]*"protected_exports_list"[[:space:]]*:[[:space:]]*"android\/abi_gki_protected_exports_aarch64",$/d' kernel_platform/msm-kernel/BUILD.bazel; fi
+          if [ -e kernel_platform/common/BUILD.bazel ]; then
+            sed -i '/^[[:space:]]*"protected_exports_list"[[:space:]]*:[[:space:]]*"android\/abi_gki_protected_exports_aarch64",$/d' kernel_platform/common/BUILD.bazel
+          fi
+          if [ -e kernel_platform/msm-kernel/BUILD.bazel ]; then
+            sed -i '/^[[:space:]]*"protected_exports_list"[[:space:]]*:[[:space:]]*"android\/abi_gki_protected_exports_aarch64",$/d' kernel_platform/msm-kernel/BUILD.bazel
+          fi
           rm -f kernel_platform/common/android/abi_gki_protected_exports_* || true
           rm -f kernel_platform/msm-kernel/android/abi_gki_protected_exports_* || true
 
@@ -49,27 +83,79 @@ jobs:
           sed -i 's/ -dirty//g' msm-kernel/scripts/setlocalversion || true
           sed -i 's/ -dirty//g' external/dtc/scripts/setlocalversion || true
 
-      - name: Build kernel
-        run: cd kernel_workspace && chmod +x ./kernel_platform/build_with_bazel.py || true && ./kernel_platform/build_with_bazel.py -t ${CPUD} ${BUILD_METHOD} 2>&1 | tee build.log
+      - name: Build kernel (pineapple gki)
+        run: |
+          cd kernel_workspace
+          chmod +x ./kernel_platform/build_with_bazel.py || true
+          ./kernel_platform/build_with_bazel.py -t ${CPUD} ${BUILD_METHOD} 2>&1 | tee build.log
 
       - name: Collect outputs
         run: |
           mkdir -p out-artifacts
           DIST_DIR="kernel_workspace/kernel_platform/out/msm-kernel-${CPUD}-${BUILD_METHOD}/dist"
           BAZEL_DIR="kernel_workspace/kernel_platform/bazel-out/k8-fastbuild/bin/msm-kernel/${CPUD}_gki_kbuild_mixed_tree"
+
+          echo "===== DIST_DIR ====="
           ls -lah "${DIST_DIR}" || true
+          echo "===== BAZEL_DIR ====="
           ls -lah "${BAZEL_DIR}" || true
+
           IMAGE_PATH=""
-          if [ -f "${DIST_DIR}/Image" ]; then IMAGE_PATH="${DIST_DIR}/Image"; fi
-          if [ -z "${IMAGE_PATH}" ] && [ -f "${BAZEL_DIR}/Image" ]; then IMAGE_PATH="${BAZEL_DIR}/Image"; fi
-          if [ -z "${IMAGE_PATH}" ]; then IMAGE_PATH=$(find kernel_workspace -type f -name Image | head -n 1); fi
-          if [ -n "${IMAGE_PATH}" ] && [ -f "${IMAGE_PATH}" ]; then cp "${IMAGE_PATH}" out-artifacts/Image; fi
+          if [ -f "${DIST_DIR}/Image" ]; then
+            IMAGE_PATH="${DIST_DIR}/Image"
+          fi
+          if [ -z "${IMAGE_PATH}" ] && [ -f "${BAZEL_DIR}/Image" ]; then
+            IMAGE_PATH="${BAZEL_DIR}/Image"
+          fi
+          if [ -z "${IMAGE_PATH}" ]; then
+            IMAGE_PATH=$(find kernel_workspace -type f -name Image | head -n 1)
+          fi
+
+          if [ -n "${IMAGE_PATH}" ] && [ -f "${IMAGE_PATH}" ]; then
+            cp "${IMAGE_PATH}" out-artifacts/Image
+          fi
+
           find kernel_workspace -type f | grep -E '(/Image|/Image\\.gz|/Image\\.lz4|\\.dtb$|\\.dtbo$|/dtbo\\.img$|/boot\\.img$|/vendor_boot\\.img$|/vendor_dlkm\\.img$)' | sort > out-artifacts/found-files.txt || true
+
           cp kernel_workspace/build.log out-artifacts/build.log || true
           cp kernel_workspace/repo-sync.log out-artifacts/repo-sync.log || true
 
-      - name: Upload artifacts
+      - name: Make AnyKernel3
+        run: |
+          git clone https://github.com/osm0sis/AnyKernel3 --depth=1 AnyKernel3
+          rm -rf AnyKernel3/.git
+
+          IMAGE_PATH=""
+          DIST_DIR="kernel_workspace/kernel_platform/out/msm-kernel-${CPUD}-${BUILD_METHOD}/dist"
+          BAZEL_DIR="kernel_workspace/kernel_platform/bazel-out/k8-fastbuild/bin/msm-kernel/${CPUD}_gki_kbuild_mixed_tree"
+
+          if [ -f "${DIST_DIR}/Image" ]; then
+            IMAGE_PATH="${DIST_DIR}/Image"
+          fi
+          if [ -z "${IMAGE_PATH}" ] && [ -f "${BAZEL_DIR}/Image" ]; then
+            IMAGE_PATH="${BAZEL_DIR}/Image"
+          fi
+          if [ -z "${IMAGE_PATH}" ]; then
+            IMAGE_PATH=$(find kernel_workspace -type f -name Image | head -n 1)
+          fi
+
+          if [ -z "${IMAGE_PATH}" ] || [ ! -f "${IMAGE_PATH}" ]; then
+            echo "Image not found, cannot create AnyKernel3 package"
+            exit 1
+          fi
+
+          cp "${IMAGE_PATH}" AnyKernel3/Image
+          cd AnyKernel3
+          zip -r9 ../AnyKernel3_Ace3V_A16_Stock.zip ./*
+
+      - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
           name: Ace3V_A16_Stock_Kernel
           path: out-artifacts
+
+      - name: Upload AnyKernel3 package
+        uses: actions/upload-artifact@v4
+        with:
+          name: AnyKernel3_Ace3V_A16_Stock
+          path: AnyKernel3_Ace3V_A16_Stock.zip
